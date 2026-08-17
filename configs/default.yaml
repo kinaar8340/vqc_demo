@@ -1,0 +1,36 @@
+# VQC intensity-proxy POC — Sony VPL-HW20A projector profile
+projector:
+  name: Sony VPL-HW20A
+  width: 1920
+  height: 1080
+  fps: 24
+  hold_frames: 8          # each symbol is held this many video frames (~333 ms @ 24p)
+  pix_fmt: yuv420p
+  crf: 18
+  safe_area: 0.88         # keep rings inside this fraction of the short axis
+  codec: libx264
+
+encode:
+  qec_reps: 3             # [[3,1,3]] bit-majority, matching vqc_proto
+  n_rings: 8              # |ℓ| = 1 .. 8 concentric LG donuts
+  guide_level: 0.08       # faint always-on ring so the decoder can lock radii
+  on_level: 1.0
+  payload_max: 256
+  version: 1
+
+optics:
+  # Intensity-only LG p=0 donuts. Peak radius scales as w0 * sqrt(|ℓ|/2).
+  w0_frac: 0.40           # ring |ℓ|=8 peaks at this fraction of half-min(H,W)
+  p: 0
+
+channel:                  # software capture model for loopback / CI
+  blur_sigma: 1.4
+  noise_std: 0.025
+  gamma: 2.0
+  shift_px: 3
+  scale: 0.97
+
+paths:
+  frames_subdir: frames
+  video_name: vqc_poc.mp4
+  manifest_name: manifest.json
