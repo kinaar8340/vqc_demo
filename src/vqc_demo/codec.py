@@ -60,6 +60,58 @@ def encode_shard(data: bytes) -> Quaternion:
     return Quaternion(*raw)
 
 
+def binary_tetrahedral_atlas() -> list[Quaternion]:
+    """
+    24-point unit-quaternion alphabet (binary tetrahedral group).
+
+    Larger than a single xy-spoke angle: 24 Hopf-atlas vertices on S³.
+    """
+    pts: list[Quaternion] = []
+    for i in range(4):
+        v = [0.0, 0.0, 0.0, 0.0]
+        v[i] = 1.0
+        pts.append(Quaternion(*v))
+        v[i] = -1.0
+        pts.append(Quaternion(*v))
+    half = 0.5
+    for sw in (-1, 1):
+        for sx in (-1, 1):
+            for sy in (-1, 1):
+                for sz in (-1, 1):
+                    pts.append(Quaternion(sw * half, sx * half, sy * half, sz * half))
+    # Dedup (the ±e_i set is already unique).
+    uniq: list[Quaternion] = []
+    seen: set[tuple] = set()
+    for q in pts:
+        key = tuple(round(c, 6) for c in q.as_tuple())
+        if key not in seen:
+            seen.add(key)
+            uniq.append(q.unit())
+    return uniq
+
+
+ATLAS_24 = binary_tetrahedral_atlas()
+
+
+def snap_to_atlas(q: Quaternion, atlas: list[Quaternion] | None = None) -> tuple[Quaternion, int]:
+    """Nearest atlas vertex (Euclidean on the 4-vector)."""
+    atlas = atlas or ATLAS_24
+    u = q.unit().as_tuple()
+    best_i = 0
+    best_d = 1e9
+    for i, a in enumerate(atlas):
+        d = sum((x - y) ** 2 for x, y in zip(u, a.as_tuple()))
+        if d < best_d:
+            best_d = d
+            best_i = i
+    return atlas[best_i], best_i
+
+
+def encode_shard_atlas(data: bytes) -> tuple[Quaternion, int]:
+    """Payload → nearest 24-cell vertex. Index is the extra shard symbol."""
+    return snap_to_atlas(encode_shard(data))
+
+
 def repetition_encode_byte(value: int, reps: int = 3) -> list[int]:
     return [int(value) & 0xFF] * reps
 

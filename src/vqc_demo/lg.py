@@ -6,6 +6,11 @@ import numpy as np
 from scipy.special import factorial, genlaguerre
 
 
+def lg_mode(ell: int, rho: np.ndarray, phi: np.ndarray, w0: float, p: int = 0) -> np.ndarray:
+    """Complex LG field: radial envelope × exp(i ℓ φ). For SLM phase export."""
+    return lg_radial(p, ell, rho, w0) * np.exp(1j * int(ell) * phi)
+
+
 def lg_radial(p: int, ell: int, rho: np.ndarray, w0: float) -> np.ndarray:
     """Radial LG_{p}^{|ell|} envelope."""
     L = abs(int(ell))

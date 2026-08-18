@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .channel import ChannelModel
+from .channel import ChannelModel, get_preset
 from .pipeline import decode_path, encode_to_dir, loopback
 from .projector import TEST_PROFILE, load_config, profile_from_config
 
@@ -42,10 +42,27 @@ def _parser() -> argparse.ArgumentParser:
     lp.add_argument("payload", nargs="?", default="I live in Oregon")
     lp.add_argument("--channel", action="store_true", help="apply blur/gamma/noise model")
     lp.add_argument(
+        "--preset",
+        default=None,
+        help="channel preset: clean, projector, harsh, kolmogorov, bmgl",
+    )
+    lp.add_argument(
         "--full",
         action="store_true",
         help="use the 1920×1080 VPL-HW20A profile (default is a fast 320×180 loopback)",
     )
+
+    slm = sub.add_parser("slm", help="export a phase-only SLM hologram package (bench handoff)")
+    slm.add_argument("payload", nargs="?", default="I live in Oregon")
+    slm.add_argument("-o", "--out", type=Path, default=Path("outputs/slm/generic_512"))
+    slm.add_argument("--preset", default="generic_512", help="generic_512 | holoeye_pluto_2 | thorlabs_1080p")
+    slm.add_argument("--frames", type=int, default=16)
+    slm.add_argument("--orbs", type=int, default=4)
+    slm.add_argument("--gs", action="store_true", help="Gerchberg-Saxton refinement (slower)")
+
+    stt = sub.add_parser("stress", help="run published software-fidelity sweep")
+    stt.add_argument("-o", "--out", type=Path, default=Path("docs/published_metrics.json"))
+    stt.add_argument("--payload", default="I live in Oregon")
 
     sub.add_parser("info", help="print projector profile and honesty notes")
     return p
@@ -111,16 +128,45 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(report, indent=2))
         return 0 if result.crc_ok else 2
 
+    if args.cmd == "slm":
+        from .slm import export_hologram_package
+
+        meta = export_hologram_package(
+            args.payload,
+            args.out,
+            preset=args.preset,
+            num_frames=args.frames,
+            n_orbs=args.orbs,
+            use_gs=args.gs,
+        )
+        print(json.dumps({k: meta[k] for k in ("out_dir", "payload_text", "atlas_index", "n_phase_frames", "disclaimer") if k in meta}, indent=2))
+        print(args.out)
+        return 0
+
+    if args.cmd == "stress":
+        from .stress import run_sweep, write_metrics
+
+        summary = run_sweep(args.payload)
+        write_metrics(args.out, summary)
+        print(json.dumps({k: summary[k] for k in ("n_cases", "n_ok", "pass_rate", "disclaimer")}, indent=2))
+        print(args.out)
+        return 0 if summary["n_ok"] == summary["n_cases"] else 2
+
     if args.cmd == "loopback":
         ch = None
-        if args.channel:
+        apply = False
+        if args.preset:
+            ch = get_preset(args.preset)
+            apply = args.preset != "clean"
+        elif args.channel:
             ch = ChannelModel(**(cfg.get("channel") or {}))
+            apply = True
         result = loopback(
             args.payload,
             profile=profile if args.full else TEST_PROFILE,
             cfg=cfg,
             channel=ch,
-            apply_channel=args.channel,
+            apply_channel=apply,
         )
         print(result)
         report = result.meta.get("report") or {}

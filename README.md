@@ -2,9 +2,11 @@
 
 Intensity-proxy proof of concept for the **Vortex Quaternion Conduit** software decoder, using a **Sony VPL-HW20A** (1080p SXRD lamp projector) as a free-space display and a camera as the receiver.
 
-Parent simulations live in [`../vqc`](../vqc) and [`../vqc_proto`](../vqc_proto). This directory is self-contained and does **not** require those packages at runtime.
+Parent simulations: [`vqc`](https://github.com/kinaar8340/vqc_sims_public) · [`vqc_proto`](https://github.com/kinaar8340/vqc_proto). This directory is self-contained.
 
-> **Honesty first.** The VPL-HW20A cannot emit coherent Laguerre-Gaussian modes, helical phase fronts \(\exp(i\ell\phi)\), or nested helices-within-a-helix. It projects **incoherent RGB intensity**. This POC is a data-path / decoder demo and a presentation channel — not a physical OAM link. A real optical embodiment still needs a laser + SLM transmitter and a mode-sorting receiver.
+> **Honesty first.** The VPL-HW20A cannot emit coherent Laguerre-Gaussian modes, helical phase fronts \(\exp(i\ell\phi)\), or nested helices-within-a-helix. It projects **incoherent RGB intensity**. Treat the projector footage as **marketing and data-path validation**, not the final optical claim. A real free-space OAM link still needs a laser + phase-only SLM + Fourier optics + a mode sorter. That is the garage-to-lab cost. Until then, the highest-leverage work is the software embodiment and the open demos.
+
+The coherent handoff (phase maps you can load on a real SLM, no reverse-engineering required) is [`docs/SLM_QUICKSTART.md`](docs/SLM_QUICKSTART.md).
 
 ---
 
@@ -26,11 +28,12 @@ payload  →  8 concentric LG donuts (ℓ = 1…8)
 | DWDM proxy | Each ℓ is a distinct RGB colour (red→magenta). Not a wavelength mux |
 | Orbital Braille PWM | Ring **on** = bit 1, faint guide = bit 0 |
 | Quaternion shard | Gold spoke (angle from \(x,y\)). Decoder recovers a unit-q from the spoke |
-| 16-qubit QEC proxy | Byte-level [[3,1,3]] repetition + majority vote |
+| 16-qubit QEC proxy | Byte-level [[3,1,3]] or [[5,1,5]] majority vote |
+| Quaternion alphabet | 24-vertex binary tetrahedral atlas (Hopf shard), snapped from the payload |
 | Integrity | CRC-32 over the payload |
 | ICA / demix | 3×3 colour-mix invert from the CALIB RGB patches — not FastICA |
 | Pyramidal FM | Triangle luminance bar across the packet (visual only) |
-| BMGL / turbulence | Software blur/gamma/noise in `--channel`. Not physical scintillation |
+| BMGL / turbulence | Named software presets (`projector`, `kolmogorov`, `bmgl`). Intensity proxies only |
 
 Default test message is the patent Figure 1 payload: **`I live in Oregon`**.
 
@@ -44,13 +47,20 @@ python3 -m pip install -e ".[dev]"
 
 # In-memory encode → decode (fast 320×180; add --full for 1080p)
 python3 -m vqc_demo loopback "I live in Oregon"
-python3 -m vqc_demo loopback "I live in Oregon" --channel   # blur / gamma / noise
+python3 -m vqc_demo loopback "I live in Oregon" --preset projector
+python3 -m vqc_demo loopback "I live in Oregon" --preset kolmogorov
 
 # Render 1080p24 frames and stitch an MP4 for the VPL-HW20A
 python3 -m vqc_demo encode "I live in Oregon" -o outputs/tx
 
 # After you film the screen, decode the capture (writes fidelity.json)
 python3 -m vqc_demo decode path/to/capture.mp4 --expected "I live in Oregon"
+
+# Phase-only SLM package (bench, not the projector)
+python3 -m vqc_demo slm "I live in Oregon" -o outputs/slm/generic_512
+
+# Publish software-fidelity numbers
+python3 -m vqc_demo stress -o docs/published_metrics.json
 ```
 
 `encode` writes:
@@ -138,3 +148,28 @@ vqc_demo/
 ```
 
 Tunables (`hold_frames`, ring count, QEC reps, blur) live in `configs/default.yaml`.
+
+---
+
+## Published software metrics
+
+`python3 -m vqc_demo stress` writes [`docs/published_metrics.json`](docs/published_metrics.json). Snapshot (v0.2.0, payload `I live in Oregon`, 320×180):
+
+| Channel | QEC-3 | QEC-5 |
+|---|---|---|
+| clean | pass, BER 0 | pass, BER 0 |
+| projector | pass, BER 0 | pass, BER 0 |
+| bmgl (intensity proxy) | pass, BER 0 | pass, BER 0 |
+| kolmogorov r₀=0.18 | **fail** (lost sync) | **fail** (lost sync) |
+
+That last row is the point of the sweep: the decoder has a measured ceiling under a log-normal scintillation screen. These are **software intensity-proxy** numbers, not a free-space OAM BER.
+
+---
+
+## What this is not
+
+- Not coherent OAM, not nested helices-within-a-helix, not BMGL on a real wavefront.
+- Not Fisher–Rao font geometry or FastICA — those live in [`vqc_proto`](https://github.com/kinaar8340/vqc_proto) (HF Space included).
+- Not the drift-resistant memory architecture — that is [`qvpic`](https://github.com/kinaar8340) / local `qvpic`.
+
+The remaining ceiling is optical coherence and mode sorting. Until that equipment exists, keep the projector footage honest and keep the software + SLM export path open so anyone with a bench can load the phase patterns without reverse-engineering.

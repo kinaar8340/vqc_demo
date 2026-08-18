@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .channel import ChannelModel
-from .codec import encode_shard, pack_packet, payload_to_bytes
+from .codec import encode_shard_atlas, pack_packet, payload_to_bytes
 from .decoder import DecodeResult, decode_frames, decode_png_dir, load_frames
 from .frames import FrameRenderer, RenderConfig, contact_sheet, save_png, write_sequence
 from .projector import ProjectorProfile, VPL_HW20A, load_config, profile_from_config
@@ -56,7 +56,7 @@ def build_frames(
         raise ValueError(f"payload {len(data)} bytes exceeds payload_max={max_n}")
 
     symbols = pack_packet(data, qec_reps=qec_reps, version=int(enc.get("version", 1)))
-    quat = encode_shard(data)
+    quat, atlas_index = encode_shard_atlas(data)
     renderer = FrameRenderer(profile, _render_cfg(cfg))
 
     frames = []
@@ -90,6 +90,8 @@ def build_frames(
         "n_frames": len(frames),
         "hold_frames": profile.hold_frames,
         "quaternion": list(quat.as_tuple()),
+        "atlas_index": atlas_index,
+        "atlas_size": 24,
         "projector": profile.to_dict(),
         "peak_radii_px": renderer.peak_radii,
         "w0_px": renderer.w0,
