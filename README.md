@@ -173,3 +173,7 @@ That last row is the point of the sweep: the decoder has a measured ceiling unde
 - Not the drift-resistant memory architecture — that is [`qvpic`](https://github.com/kinaar8340) / local `qvpic`.
 
 The remaining ceiling is optical coherence and mode sorting. Until that equipment exists, keep the projector footage honest and keep the software + SLM export path open so anyone with a bench can load the phase patterns without reverse-engineering.
+
+---
+
+X: [@kinaar8340](https://x.com/kinaar8340)
