@@ -31,6 +31,15 @@ def test_peak_radii_match_renderer():
     assert renderer.peak_radii == expect
 
 
+def test_decode_symbol_adaptive_on_lifted_wash():
+    """Camera captures sit on a blue wash; a fixed 0.30 cut would read 0xFF."""
+    renderer = FrameRenderer(TEST_PROFILE, RenderConfig())
+    frame = renderer.render_data(0xAA, encode_shard(b"wash"), 0)
+    washed = np.clip(frame.astype(np.float32) * 0.55 + 80.0, 0, 255).astype(np.uint8)
+    got = decode_symbol(washed, renderer.peak_radii)
+    assert got == 0xAA, f"expected 0xAA on lifted wash, got 0x{got:02x}"
+
+
 def test_on_bits_are_brighter_than_guide():
     renderer = FrameRenderer(TEST_PROFILE, RenderConfig())
     frame = renderer.render_data(0x01, encode_shard(b"b"), 0)

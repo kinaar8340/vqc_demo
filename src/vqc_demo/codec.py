@@ -154,8 +154,19 @@ def pack_packet(payload: bytes, *, qec_reps: int = 3, version: int = VERSION) ->
     return stream
 
 
-def unpack_packet(symbols: list[int], *, qec_reps: int = 3) -> tuple[bytes, dict]:
-    """Recover payload from a decoded symbol stream. Raises ValueError on framing/CRC fail."""
+def unpack_packet(
+    symbols: list[int],
+    *,
+    qec_reps: int = 3,
+    strict: bool = True,
+) -> tuple[bytes, dict]:
+    """Recover payload from a decoded symbol stream.
+
+    Raises ValueError on framing failure. CRC mismatch raises only when
+    ``strict`` is true (default); otherwise the payload is returned with
+    ``meta['crc_ok'] is False`` so a camera capture can still print the
+    recovered string.
+    """
     if qec_reps < 1:
         raise ValueError("qec_reps must be >= 1")
 
@@ -189,7 +200,8 @@ def unpack_packet(symbols: list[int], *, qec_reps: int = 3) -> tuple[bytes, dict
     expect = crc32(payload)
     meta["crc_ok"] = got_crc == expect
     meta["crc"] = got_crc
-    if got_crc != expect:
+    meta["crc_expect"] = expect
+    if got_crc != expect and strict:
         raise ValueError(f"CRC mismatch: got 0x{got_crc:08x} expected 0x{expect:08x}")
     return payload, meta
 

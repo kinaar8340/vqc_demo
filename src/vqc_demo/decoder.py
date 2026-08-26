@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from .codec import Quaternion, bits_to_byte, majority_byte, unpack_packet
+from .codec import SYNC_A, SYNC_B, Quaternion, bits_to_byte, majority_byte, unpack_packet
 from .fidelity import build_report, qec_disagreement
 from .lg import bit_radii
 from .projector import ProjectorProfile, VPL_HW20A
@@ -179,6 +179,28 @@ def recover_quaternion_spoke(
     return Quaternion(w, np.cos(angle), np.sin(angle), 0.0).unit()
 
 
+def _symbol_from_samples(samples: np.ndarray, bg: float = 0.0) -> int:
+    """Threshold 8 ring samples.
+
+    Software frames have a near-black field (bg ~0.02) and a fixed 0.30
+    cut works. Phone captures of the VPL-HW20A sit on a lifted blue wash
+    (bg ~0.3) where every ring is already >0.30, so we switch to a
+    min/max-relative cut.
+    """
+    lo, hi = float(samples.min()), float(samples.max())
+    span = hi - lo
+    if float(bg) < 0.18:
+        if hi < 0.12:
+            return 0
+        if lo > 0.40:
+            return 0xFF
+        return bits_to_byte((samples >= 0.30).astype(np.uint8))
+    if span < 0.08:
+        return 0xFF if hi > 0.35 else 0
+    thresh = lo + 0.45 * span
+    return bits_to_byte((samples >= thresh).astype(np.uint8))
+
+
 def decode_symbol(
     frame: np.ndarray,
     radii: list[float],
@@ -189,15 +211,11 @@ def decode_symbol(
         cy, cx = find_center(frame)
     lum = _blank_chrome(_luminance(frame))
     samples = radial_samples(lum, cy, cx, radii, _annulus_width(radii))
-    lo, hi = float(samples.min()), float(samples.max())
-    # Guide rings sit ~0.04, ON rings >= ~0.55. A min/max-relative
-    # threshold misfires when every ring is ON (0xFF).
-    if hi < 0.12:
-        return 0
-    if lo > 0.40:
-        return 0xFF
-    bits = (samples >= 0.30).astype(np.uint8)
-    return bits_to_byte(bits)
+    yy, xx = np.indices(lum.shape, dtype=np.float32)
+    rho = np.hypot(xx - cx, yy - cy)
+    outside = rho > (radii[-1] * 1.15 if radii else 1.0)
+    bg = float(lum[outside].mean()) if outside.any() else 0.0
+    return _symbol_from_samples(samples, bg=bg)
 
 
 def group_held_frames(frames: list[np.ndarray], hold: int) -> list[list[np.ndarray]]:
@@ -216,6 +234,100 @@ def expected_radii(profile: ProjectorProfile, n_rings: int, w0_frac: float) -> l
     return bit_radii(n_rings, profile.short_axis, profile.safe_area)
 
 
+def _hamming(a: int, b: int) -> int:
+    return bin((int(a) ^ int(b)) & 0xFF).count("1")
+
+
+def _group_symbols(syms: list[int], hold: int, offset: int = 0) -> list[int]:
+    out: list[int] = []
+    i = offset
+    while i < len(syms):
+        chunk = syms[i : i + hold]
+        if not chunk:
+            break
+        out.append(majority_byte(chunk))
+        i += hold
+    return out
+
+
+def _snap_sync_markers(grouped: list[int], reps: int = 3) -> list[int]:
+    """Force the protocol AA×reps / 55×reps preamble once it is located."""
+    out = list(grouped)
+    i = _find_aa_preamble(out, reps)
+    if i is None:
+        return out
+    for k in range(reps):
+        out[i + k] = SYNC_A
+        j = i + reps + k
+        if j < len(out):
+            out[j] = SYNC_B
+    return out
+
+
+def _find_aa_preamble(grouped: list[int], reps: int = 3) -> int | None:
+    """First index of ``reps`` symbols close to SYNC_A (0xAA).
+
+    Camera captures often flip 1–2 ring bits, so we allow Hamming distance 2.
+    """
+    if len(grouped) < reps * 2:
+        return None
+    for i in range(len(grouped) - reps * 2 + 1):
+        if all(_hamming(grouped[i + k], SYNC_A) <= 2 for k in range(reps)):
+            return i
+    return None
+
+
+def _train_ring_thresholds(
+    scores: np.ndarray,
+    aa_idx: list[int],
+    bb_idx: list[int],
+) -> np.ndarray | None:
+    """Per-ring midpoint of ON vs OFF using the known AA / 55 preamble."""
+    if not aa_idx or not bb_idx:
+        return None
+    aa_bits = np.array([(SYNC_A >> i) & 1 for i in range(8)], dtype=np.uint8)
+    bb_bits = np.array([(SYNC_B >> i) & 1 for i in range(8)], dtype=np.uint8)
+    thr = np.zeros(8, dtype=np.float32)
+    for r in range(8):
+        on: list[float] = []
+        off: list[float] = []
+        for i in aa_idx:
+            (on if aa_bits[r] else off).append(float(scores[i, r]))
+        for i in bb_idx:
+            (on if bb_bits[r] else off).append(float(scores[i, r]))
+        if not on or not off:
+            return None
+        on_m, off_m = float(np.mean(on)), float(np.mean(off))
+        thr[r] = 0.5 * (on_m + off_m)
+    return thr
+
+
+def _apply_thresholds(scores: np.ndarray, thr: np.ndarray) -> list[int]:
+    bits = scores >= thr
+    return [int(bits_to_byte(row.astype(np.uint8))) for row in bits]
+
+
+def _preamble_frame_indices(
+    start_group: int, hold: int, offset: int, n_frames: int, reps: int = 3
+) -> tuple[list[int], list[int]]:
+    aa: list[int] = []
+    bb: list[int] = []
+    for gi in range(start_group, start_group + reps):
+        aa.extend(range(offset + gi * hold, offset + (gi + 1) * hold))
+    for gi in range(start_group + reps, start_group + 2 * reps):
+        bb.extend(range(offset + gi * hold, offset + (gi + 1) * hold))
+    aa = [i for i in aa if 0 <= i < n_frames]
+    bb = [i for i in bb if 0 <= i < n_frames]
+    return aa, bb
+
+
+def _try_unpack(symbols: list[int], qec_reps: int) -> tuple[bytes, dict] | None:
+    try:
+        return unpack_packet(symbols, qec_reps=qec_reps, strict=False)
+    except ValueError:
+        return None
+
+
 def decode_frames(
     frames: list[np.ndarray],
     *,
@@ -228,68 +340,153 @@ def decode_frames(
 ) -> DecodeResult:
     profile = profile or VPL_HW20A
     hold = hold_frames if hold_frames is not None else profile.hold_frames
-    radii = expected_radii(profile, n_rings, w0_frac)
+    if not frames:
+        raise ValueError("no frames to decode")
 
-    # Center from the brightest non-black frame (usually first data/calib).
-    centers = [find_center(f) for f in frames[:: max(1, len(frames) // 8)] or frames[:1]]
+    # Sample radii from the *captured* frame, not the 1080p projector profile.
+    # A 772p phone capture sampled at 1080p radii never hits the rings.
+    h, w = frames[0].shape[:2]
+    radii = bit_radii(n_rings, min(h, w), profile.safe_area)
+
+    step = max(1, len(frames) // 8)
+    centers = [find_center(f) for f in frames[::step]]
     cy = float(np.median([c[0] for c in centers]))
     cx = float(np.median([c[1] for c in centers]))
 
-    symbols: list[int] = []
-    disagreements: list[float] = []
-    snr_acc: list[float] = []
-    rgb_stack: list[np.ndarray] = []
-    mix = estimate_color_mix(frames[0]) if frames else np.eye(3, dtype=np.float32)
+    annulus = _annulus_width(radii)
+    yy, xx = np.indices((h, w), dtype=np.float32)
+    rho = np.hypot(xx - cx, yy - cy)
+    masks = [np.abs(rho - r) <= annulus for r in radii]
 
-    for group in group_held_frames(frames, hold):
-        votes = [decode_symbol(f, radii, cy, cx) for f in group]
-        # Skip near-black groups (calib/black) — they decode as 0.
-        lum = float(np.mean([_luminance(f).mean() for f in group]))
-        if lum < 0.045 and all(v == 0 for v in votes):
+    n = len(frames)
+    scores = np.zeros((n, n_rings), dtype=np.float32)
+    frame_luma = np.zeros(n, dtype=np.float32)
+    frame_bg = np.zeros(n, dtype=np.float32)
+    outside = rho > (radii[-1] * 1.15)
+    for i, frame in enumerate(frames):
+        lum = _blank_chrome(_luminance(frame))
+        frame_luma[i] = float(_luminance(frame).mean())
+        frame_bg[i] = float(lum[outside].mean()) if outside.any() else 0.0
+        for k, mask in enumerate(masks):
+            if mask.any():
+                scores[i, k] = float(np.percentile(lum[mask], 85))
+
+    pass1 = [_symbol_from_samples(scores[i], bg=float(frame_bg[i])) for i in range(n)]
+    for i in range(n):
+        if float(scores[i].max() - scores[i].min()) < 0.08 and frame_luma[i] < 0.22:
+            pass1[i] = 0
+
+    trained: list[int] | None = None
+    grouped_probe = _group_symbols(pass1, hold, 0)
+    preamble_at = _find_aa_preamble(grouped_probe, qec_reps)
+    if preamble_at is not None:
+        aa_idx, bb_idx = _preamble_frame_indices(preamble_at, hold, 0, n, qec_reps)
+        thr = _train_ring_thresholds(scores, aa_idx, bb_idx)
+        if thr is not None:
+            trained = _apply_thresholds(scores, thr)
+            for i in range(n):
+                if float(scores[i].max() - scores[i].min()) < 0.08:
+                    trained[i] = 0
+
+    candidates: list[tuple[str, list[int]]] = []
+    holds = sorted({hld for hld in (hold - 1, hold, hold + 1) if hld >= 1})
+    for label, stream in (("trained", trained), ("adaptive", pass1)):
+        if stream is None:
             continue
-        symbols.append(majority_byte(votes))
-        disagreements.append(qec_disagreement(votes))
-        mid = group[len(group) // 2]
-        rgb = rgb_ring_samples(mid, cy, cx, radii)
-        rgb_stack.append(demix_rgb(rgb, mix))
-        samples = radial_samples(
-            _luminance(mid), cy, cx, radii, _annulus_width(radii)
-        )
-        noise = float(np.median(samples)) + 1e-6
-        peak = float(samples.max())
-        snr_acc.append(20.0 * float(np.log10(max(peak, 1e-6) / noise)))
+        for hld in holds:
+            for off in range(hld):
+                grouped = _group_symbols(stream, hld, off)
+                # Drop leading near-black zeros so QEC alignment can snap to AA.
+                while grouped and grouped[0] == 0:
+                    grouped.pop(0)
+                if grouped:
+                    candidates.append((f"{label}/hold={hld}/off={off}", grouped))
+                    snapped = _snap_sync_markers(grouped, qec_reps)
+                    if snapped != grouped:
+                        candidates.append((f"{label}/hold={hld}/off={off}/snap", snapped))
 
-    payload, meta = unpack_packet(symbols, qec_reps=qec_reps)
+    payload = b""
+    meta: dict = {}
+    symbols: list[int] = grouped_probe
+    chosen = "none"
+    crc_ok = False
+    for label, grouped in candidates:
+        got = _try_unpack(grouped, qec_reps)
+        if got is None:
+            continue
+        this_ok = bool(got[1].get("crc_ok"))
+        if this_ok or not meta:
+            payload, meta = got
+            symbols = grouped
+            chosen = label
+            crc_ok = this_ok
+        if crc_ok:
+            break
+
+    if not meta:
+        meta = {"error": "sync markers 0xAA 0x55 not found", "crc_ok": False}
+
     try:
         text = payload.decode("utf-8")
     except UnicodeDecodeError:
         text = ""
 
+    disagreements: list[float] = []
+    snr_acc: list[float] = []
+    rgb_stack: list[np.ndarray] = []
+    mix = estimate_color_mix(frames[0])
+    use_stream = trained if trained is not None else pass1
+    for gi, group in enumerate(group_held_frames(frames, hold)):
+        start = gi * hold
+        votes = use_stream[start : start + len(group)]
+        if not votes:
+            continue
+        if float(np.mean(frame_luma[start : start + len(group)])) < 0.045 and all(
+            v == 0 for v in votes
+        ):
+            continue
+        disagreements.append(qec_disagreement(votes))
+        mid = group[len(group) // 2]
+        rgb = rgb_ring_samples(mid, cy, cx, radii)
+        rgb_stack.append(demix_rgb(rgb, mix))
+        samples = scores[min(start + len(group) // 2, n - 1)]
+        noise = float(np.median(samples)) + 1e-6
+        peak = float(samples.max())
+        snr_acc.append(20.0 * float(np.log10(max(peak, 1e-6) / noise)))
+
     quat = None
-    data_frames = [g[0] for g in group_held_frames(frames, hold) if _luminance(g[0]).mean() > 0.05]
-    if data_frames:
-        quat = recover_quaternion_spoke(data_frames[len(data_frames) // 2], cy, cx, radii[-1])
+    data_idx = [i for i, s in enumerate(use_stream) if s and frame_luma[i] > 0.05]
+    if data_idx:
+        quat = recover_quaternion_spoke(
+            frames[data_idx[len(data_idx) // 2]], cy, cx, radii[-1]
+        )
 
     meta["center"] = (cy, cx)
+    meta["radii"] = [float(r) for r in radii]
+    meta["frame_size"] = [int(h), int(w)]
+    meta["hold_frames"] = hold
+    meta["decode_path"] = chosen
+    meta["preamble_group"] = preamble_at
     meta["n_raw_symbols"] = len(symbols)
     meta["color_mix"] = mix.tolist()
     meta["quaternion"] = list(quat.as_tuple()) if quat else None
+    meta["crc_ok"] = crc_ok
     meta["report"] = build_report(
         payload=payload,
         text=text,
-        crc_ok=True,
+        crc_ok=crc_ok,
         expected=expected,
         qec_disagree_mean=float(np.mean(disagreements)) if disagreements else 0.0,
         ring_snr_db=float(np.mean(snr_acc)) if snr_acc else None,
         quat=quat,
-        extra={"n_demixed_shards": len(rgb_stack)},
+        extra={"n_demixed_shards": len(rgb_stack), "decode_path": chosen},
     )
     return DecodeResult(
         payload=payload,
         text=text,
         symbols=symbols,
         meta=meta,
-        crc_ok=True,
+        crc_ok=crc_ok,
     )
 
 

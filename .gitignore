@@ -7,4 +7,8 @@ venv/
 outputs/**
 !outputs/.gitkeep
 *.mp4
+!captures/*.mp4
+captures/*_frames/
+captures/fidelity.json
+.idea/
 !docs/**

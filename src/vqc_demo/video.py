@@ -55,6 +55,45 @@ def stitch_pngs(
     return dest
 
 
+def probe_fps(video: Path) -> float | None:
+    """Return avg frame rate, or None if ffprobe is missing / unreadable."""
+    probe = shutil.which("ffprobe")
+    if not probe:
+        return None
+    proc = subprocess.run(
+        [
+            probe,
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=avg_frame_rate",
+            "-of",
+            "default=nw=1:nk=1",
+            str(video),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    raw = (proc.stdout or "").strip()
+    if proc.returncode != 0 or not raw or raw in {"N/A", "0/0"}:
+        return None
+    if "/" in raw:
+        num, den = raw.split("/", 1)
+        try:
+            n, d = float(num), float(den)
+        except ValueError:
+            return None
+        if d == 0:
+            return None
+        return n / d
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
 def extract_pngs(
     video: Path,
     dest_dir: Path,

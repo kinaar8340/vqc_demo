@@ -165,9 +165,10 @@ def decode_path(
     enc = cfg.get("encode") or {}
     opt = cfg.get("optics") or {}
     source = Path(source)
+    hold = profile.hold_frames
     kwargs = dict(
         profile=profile,
-        hold_frames=profile.hold_frames,
+        hold_frames=hold,
         n_rings=int(enc.get("n_rings", 8)),
         w0_frac=float(opt.get("w0_frac", 0.40)),
         qec_reps=int(enc.get("qec_reps", 3)),
@@ -178,6 +179,11 @@ def decode_path(
     elif source.suffix.lower() in {".png", ".jpg", ".jpeg"}:
         raise ValueError("pass a directory of frames or an .mp4, not a single image")
     else:
+        from .video import probe_fps
+
+        fps = probe_fps(source)
+        if fps and profile.fps:
+            kwargs["hold_frames"] = max(1, int(round(profile.hold_frames * fps / profile.fps)))
         dest = Path(work_dir) if work_dir else source.parent / (source.stem + "_frames")
         paths = extract_pngs(source, dest)
         result = decode_frames(load_frames(paths), **kwargs)
