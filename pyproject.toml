@@ -8,7 +8,7 @@ version = "0.2.0"
 description = "Intensity-proxy VQC receiver/decoder POC for a Sony VPL-HW20A projector"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { text = "PolyForm-Noncommercial-1.0.0" }
 authors = [{ name = "kinaar" }]
 dependencies = [
     "numpy>=1.24",

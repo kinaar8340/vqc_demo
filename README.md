@@ -207,4 +207,14 @@ The remaining ceiling is optical coherence and mode sorting. Until that equipmen
 
 ---
 
+## License
+
+**[PolyForm Noncommercial License 1.0.0](LICENSE)**. See [`PATENTS.md`](PATENTS.md) and [`IP_NOTICE.md`](IP_NOTICE.md).
+
+This is a VQC encoder/decoder embodiment (parent: [`vqc_sims_public`](https://github.com/kinaar8340/vqc_sims_public)). Commits previously published under the MIT License remain MIT for **copyright**. This version is PolyForm Noncommercial. MIT never licensed U.S. Provisional Application 63/913,110.
+
+Commercial use or production deployment requires a written license: kinaar0@protonmail.com
+
+---
+
 X: [@kinaar8340](https://x.com/kinaar8340)
